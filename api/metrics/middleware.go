@@ -1,12 +1,11 @@
 package metrics
 
 import (
-	"strconv"
-	"time"
-
-	"github.com/gofiber/fiber/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"net/http"
+	"strconv"
+	"time"
 )
 
 var (
@@ -24,18 +23,30 @@ var (
 	}, []string{"name", "status"})
 )
 
-func PrometheusHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+// PrometheusHandler is a middleware function that instruments HTTP request handling for Prometheus metrics.
+func PrometheusHandler(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		c.Next()
+		// Call the next handler function in the chain with the custom ResponseWriter
+		customResponseWriter := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next(customResponseWriter, r)
 
-		statusCode := strconv.Itoa(c.Response().StatusCode())
+		statusCode := strconv.Itoa(customResponseWriter.statusCode)
 		duration := float64(time.Since(start)) / float64(time.Second)
 
 		counter.WithLabelValues(statusCode).Inc()
-		histogram.WithLabelValues(c.Method(), statusCode).Observe(duration)
-
-		return nil
+		histogram.WithLabelValues(r.Method, statusCode).Observe(duration)
 	}
+}
+
+// Custom ResponseWriter to capture the status code
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(statusCode int) {
+	rw.statusCode = statusCode
+	rw.ResponseWriter.WriteHeader(statusCode)
 }

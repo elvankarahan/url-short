@@ -2,34 +2,34 @@ package main
 
 import (
 	"fmt"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/adaptor"
-	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/lpernett/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"log"
+	"net/http"
 	"os"
-	metrics2 "url-short/metrics"
-	"url-short/routes"
+	"url-short/logger"
+	"url-short/metrics"
+	"url-short/url"
 )
 
-func setupRoutes(app *fiber.App) {
-	app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
-	app.Get("/:url", routes.ResolveURL)
-	app.Post("/api/v1", routes.ShortenURL)
-}
+func setupRoutes(mux *http.ServeMux, API *url.API) {
+	mux.HandleFunc("/", metrics.PrometheusHandler(API.Resolve))
+	mux.HandleFunc("POST /api/v1", metrics.PrometheusHandler(API.Shorten))
+	mux.Handle("/metrics", promhttp.Handler())
 
+}
 func main() {
 	err := godotenv.Load()
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	app := fiber.New()
-	app.Use(metrics2.PrometheusHandler())
-	app.Use(logger.New())
+	l := logger.New(false)
 
-	setupRoutes(app)
+	API := url.New(l, 0)
+	mux := http.NewServeMux()
 
-	log.Fatal(app.Listen(os.Getenv("PORT")))
+	setupRoutes(mux, API)
+
+	log.Fatal(http.ListenAndServe(os.Getenv("DOMAIN"), mux))
 }
