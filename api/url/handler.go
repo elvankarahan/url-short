@@ -2,12 +2,15 @@ package url
 
 import (
 	"encoding/json"
-	"github.com/asaskevich/govalidator"
+	"errors"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"time"
 	"url-short/helpers"
 )
 
@@ -16,7 +19,7 @@ import (
 func New(logger *zerolog.Logger, dbNo int) *API {
 	return &API{
 		logger:     logger,
-		repository: NewRedisClient(dbNo), // todo maybe redundant client idk
+		repository: NewRepository(dbNo),
 	}
 }
 
@@ -36,13 +39,12 @@ func (a *API) Shorten(w http.ResponseWriter, r *http.Request) {
 	ip := getIPAddress(r)
 
 	if !a.repository.isAllowed(ip) {
-		// todo return custom error messages
 		http.Error(w, newErrorResponse("Too Many Request"), http.StatusTooManyRequests)
 		return
 	}
-	// todo add url validation with SuccessResponse code
-	if !govalidator.IsURL(request.URL) {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+
+	if !isValidURL(request.URL) {
+		http.Error(w, newErrorResponse("Not Valid URL"), http.StatusBadRequest)
 		return
 	}
 
@@ -60,6 +62,10 @@ func (a *API) Shorten(w http.ResponseWriter, r *http.Request) {
 		shortenURL = request.CustomShort
 	}
 
+	if request.Expiry == 0 {
+		request.Expiry = 30
+	}
+
 	//	_, err = a.repository.Get(request.URL)
 	//	if err != nil {
 	//		// todo return error for already in use
@@ -67,7 +73,7 @@ func (a *API) Shorten(w http.ResponseWriter, r *http.Request) {
 	//		return // return not found
 	//	}
 
-	err = a.repository.Set(shortenURL, request.URL, request.Expiry)
+	err = a.repository.Set(shortenURL, request.URL, request.Expiry*time.Minute)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return // return 500
@@ -99,12 +105,15 @@ func (a *API) Shorten(w http.ResponseWriter, r *http.Request) {
 // Retrieves the corresponding value from the repository,
 // and redirects the client to the resolved URL using a 301 status code.
 func (a *API) Resolve(w http.ResponseWriter, r *http.Request) {
-	url := r.URL.Path[1:]
-	targetUrl, err := a.repository.Get(url)
-	if err != nil {
-		a.logger.Info().Str("info", url).Msg("message")
-		http.Error(w, err.Error(), http.StatusNotFound) // todo show proper message
-		return                                          // return not found
+	u := r.URL.Path[1:]
+	targetUrl, err := a.repository.Get(u)
+
+	if errors.Is(err, redis.Nil) {
+		a.logger.Info().Str("info", u).Msg("message")
+		http.NotFound(w, r)
+		return
+	} else if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 	// todo add metric and logs
 	http.Redirect(w, r, targetUrl, 301)
@@ -119,4 +128,18 @@ func getIPAddress(r *http.Request) string {
 		remoteAddr = ipParts[0]
 	}
 	return remoteAddr
+}
+
+func isValidURL(u string) bool {
+	_, err := url.ParseRequestURI(u)
+	if err != nil {
+		return false
+	}
+
+	resp, err := http.Head(u)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	return true
 }

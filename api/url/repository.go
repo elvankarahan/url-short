@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"os"
 	"time"
 )
@@ -15,29 +16,43 @@ var (
 	// defaultExpiry = 30 * time.Minute
 )
 
+//type Repository interface {
+//	Set(key string, value string, exp time.Duration) error
+//	Get(key string) (string, error)
+//	isAllowed(IP string) bool
+//	calculateRemainingRate(IP string) (int, error)
+//}
+
 type Repository struct {
 	redisClient *redis.Client
 	ctx         context.Context
 }
 
-func NewRedisClient(dbNo int) *Repository {
-	return &Repository{
+func NewRepository(dbNo int) *Repository {
+	repo := &Repository{
 		redisClient: redis.NewClient(&redis.Options{
 			Addr:     os.Getenv("DB_ADDR"),
 			Username: os.Getenv("DB_PASS"),
 			DB:       dbNo,
 		}),
-		ctx: context.Background(), // todo context
+		ctx: context.Background(),
 	}
+
+	// Check connection status
+	if err := repo.redisClient.Ping(repo.ctx).Err(); err != nil {
+		log.Error().Msg(err.Error())
+		os.Exit(1) //exit with failure
+	}
+	log.Info().Msg(`Connected to Redis`)
+
+	return repo
 }
 
 func (r *Repository) Get(key string) (string, error) {
 	value, err := r.redisClient.Get(r.ctx, key).Result()
 
-	if errors.Is(err, redis.Nil) {
-		return "", err // todo return not found
-	} else if err != nil {
-		return "", err // todo return 500
+	if err != nil {
+		return "", err
 	}
 
 	return value, nil
@@ -85,12 +100,6 @@ func (r *Repository) isAllowed(IP string) bool {
 
 	// Check if the number of requests exceeds the maxRate
 	return remainingRate > 0
-}
-
-func (r *Repository) TTL(IP string) time.Duration {
-	ttl, _ := r.redisClient.TTL(r.ctx, IP).Result()
-
-	return ttl / time.Nanosecond / time.Minute
 }
 
 // calculateRemainingRate calculates the remaining rate of requests allowed for the given IP address.

@@ -4,7 +4,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"net/http"
+	"reflect"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,13 +23,14 @@ var (
 	histogram = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "timer",
 		Help: "Histogram Metrics",
-	}, []string{"name", "status"})
+	}, []string{"name", "method"})
 )
 
 // PrometheusHandler is a middleware function that instruments HTTP request handling for Prometheus metrics.
 func PrometheusHandler(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		handlerName := getFunctionName(next)
 
 		// Call the next handler function in the chain with the custom ResponseWriter
 		customResponseWriter := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
@@ -36,7 +40,8 @@ func PrometheusHandler(next http.HandlerFunc) http.HandlerFunc {
 		duration := float64(time.Since(start)) / float64(time.Second)
 
 		counter.WithLabelValues(statusCode).Inc()
-		histogram.WithLabelValues(r.Method, statusCode).Observe(duration)
+		counter.WithLabelValues(handlerName).Inc()
+		histogram.WithLabelValues("handler", handlerName).Observe(duration)
 	}
 }
 
@@ -49,4 +54,11 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(statusCode int) {
 	rw.statusCode = statusCode
 	rw.ResponseWriter.WriteHeader(statusCode)
+}
+
+// getFunctionName returns the name of the function as string
+func getFunctionName(i interface{}) string {
+	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
+	parts := strings.Split(fullName, ".")
+	return parts[len(parts)-1]
 }

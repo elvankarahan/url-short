@@ -1,12 +1,11 @@
 package logger
 
 import (
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"net"
 	"os"
 	"time"
-
-	"github.com/rs/zerolog"
 )
 
 // New creates a new logger with the specified log level and outputs.
@@ -22,21 +21,15 @@ func New(isDebug bool) *zerolog.Logger {
 	zerolog.SetGlobalLevel(logLevel)
 
 	// Create a TCP connection to Logstash
-	conn, err := net.DialTimeout("tcp", "localhost:5000", 5*time.Second)
+	conn, err := net.DialTimeout("udp", os.Getenv("LOGSTASH_ADDR"), 5*time.Second)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to connect to Logstash")
+		log.Error().Err(err)
 	}
-
-	// Close the Logstash connection if it's not nil
-	defer func() {
-		if conn != nil {
-			conn.Close()
-		}
-	}()
 
 	// TODO need more dynamic approach for connection lost
 	var multiWriter zerolog.LevelWriter
 	if conn != nil {
+		log.Info().Msg(`Connected to Logstash`)
 		multiWriter = zerolog.MultiLevelWriter(os.Stdout, conn)
 	} else {
 		multiWriter = zerolog.MultiLevelWriter(os.Stdout)
