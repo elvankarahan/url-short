@@ -1,11 +1,14 @@
 package url
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,7 +40,6 @@ func (a *API) Shorten(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := getIPAddress(r)
-
 	if !a.repository.isAllowed(ip) {
 		http.Error(w, newErrorResponse("Too Many Request"), http.StatusTooManyRequests)
 		return
@@ -106,17 +108,40 @@ func (a *API) Shorten(w http.ResponseWriter, r *http.Request) {
 // and redirects the client to the resolved URL using a 301 status code.
 func (a *API) Resolve(w http.ResponseWriter, r *http.Request) {
 	u := r.URL.Path[1:]
-	targetUrl, err := a.repository.Get(u)
+	// Set timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	if errors.Is(err, redis.Nil) {
-		a.logger.Info().Str("info", u).Msg("message")
-		http.NotFound(w, r)
-		return
-	} else if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	errCh := make(chan error)
+	go func() {
+		defer close(errCh)
+		targetUrl, err := a.repository.Get(u)
+
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Error().Err(err).Msg(fmt.Sprintf("Error with: %s", u))
+			http.Error(w, "Error resolving URL", http.StatusInternalServerError)
+		default:
+			a.logger.Info().Str("redirect", u).Msg(targetUrl)
+			http.Redirect(w, r, targetUrl, 301)
+		}
+	}()
+
+	if err := <-errCh; err != nil {
+		if errors.Is(err, redis.Nil) {
+			a.logger.Info().Str("notFound", u).Msg(fmt.Sprintf("Not Found: %s", u))
+			http.NotFound(w, r)
+			return
+		}
+
+		log.Error().Err(err).Msg(fmt.Sprintf("Error with: %s", u))
+		http.Error(w, "Error resolving URL", http.StatusInternalServerError)
 	}
-	// todo add metric and logs
-	http.Redirect(w, r, targetUrl, 301)
 }
 
 func getIPAddress(r *http.Request) string {
